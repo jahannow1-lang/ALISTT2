@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1420">
+<title>Ali STT – تبدیل صدا به متن</title>
+<style>
+:root{--bg:#0f1420;--panel:#171e2e;--line:#27314a;--ink:#eef2fb;--mute:#93a0bd;--acc:#5b9bff;--rec:#e5484d;--ok:#2fb67c}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:"Vazirmatn","Noto Naskh Arabic","Noto Sans Arabic",Tahoma,sans-serif;font-size:16px;line-height:1.7}
+main{max-width:640px;margin:0 auto;padding:max(14px,env(safe-area-inset-top)) 14px max(14px,env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:10px;min-height:100dvh}
+h1{font-size:1.25rem;margin:4px 0 0;font-weight:700}
+h1 small{color:var(--mute);font-weight:400;font-size:.85rem;margin-inline-start:8px}
+select,button,textarea,input{font:inherit;color:var(--ink)}
+select{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+#status{min-height:1.6em;color:var(--mute);font-size:.9rem}
+#out{flex:1;min-height:42vh;width:100%;resize:none;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;font-size:1.1rem;line-height:2;direction:rtl}
+#out:focus,select:focus,button:focus-visible,input:focus{outline:2px solid var(--acc);outline-offset:2px}
+.row{display:flex;gap:8px}
+button{flex:1;border:0;border-radius:10px;padding:12px 8px;background:var(--line);cursor:pointer}
+button:active{filter:brightness(1.2)}
+.rec{background:var(--rec)}.rec.on{animation:pulse 1.2s infinite}
+.acc{background:var(--acc);color:#07101f;font-weight:700}
+.ok{background:var(--ok);color:#04150e;font-weight:700}
+@keyframes pulse{50%{box-shadow:0 0 0 6px rgba(229,72,77,.28)}}
+@media(prefers-reduced-motion:reduce){.rec.on{animation:none}}
+dialog{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:14px;width:min(92vw,380px);padding:16px}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+dialog h2{margin:0 0 10px;font-size:1.05rem}
+dialog .row{margin-top:10px;flex-wrap:wrap}
+input[type=password],input[type=text]{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px;direction:ltr;text-align:left}
+p.note{color:var(--mute);font-size:.85rem;margin:8px 0 0}
+</style>
+</head>
+<body>
+<main>
+  <h1>تبدیل صدا به متن <small>Ali STT</small></h1>
+  <select id="dialect" aria-label="لهجه">
+    <option value="fa-AF">فارسی دری (افغانستان)</option>
+    <option value="fa-AF|hz">هزارگی</option>
+    <option value="fa-AF|kb">کابلی</option>
+    <option value="fa-IR">فارسی ایران</option>
+    <option value="tg-TJ">تاجیکی</option>
+  </select>
+  <div id="status" role="status" aria-live="polite"></div>
+  <textarea id="out" placeholder="متن اینجا نوشته می‌شود. دکمه‌ی «زنده» را بزنید و صحبت کنید، یا یک فایل صوتی انتخاب کنید."></textarea>
+  <div class="row">
+    <button id="live" class="rec">● زنده</button>
+    <button id="stop">■ توقف</button>
+    <button id="file" class="acc">فایل صوتی</button>
+  </div>
+  <div class="row">
+    <button id="save" class="ok">ذخیره</button>
+    <button id="key">کلید API</button>
+    <button id="clear">پاک کردن</button>
+  </div>
+  <input id="picker" type="file" accept="audio/*,video/*" hidden>
+</main>
+
+<dialog id="dkey">
+  <h2>کلید API</h2>
+  <input id="keyin" type="password" placeholder="gsk_... یا sk-..." autocomplete="off">
+  <p class="note">برای تبدیل فایل لازم است. کلید رایگان Groq (شروع با gsk_) یا کلید اوپن‌ای‌آی (شروع با sk-) را بگذارید. کلید فقط در همین مرورگر ذخیره می‌شود.</p>
+  <div class="row"><button id="keysave" class="acc">ذخیره</button><button data-close>بستن</button></div>
+</dialog>
+
+<dialog id="dsave">
+  <h2>ذخیره به صورت</h2>
+  <div class="row">
+    <button data-fmt="txt">TXT</button><button data-fmt="doc">Word</button>
+    <button data-fmt="pdf">PDF</button><button data-fmt="png">عکس PNG</button>
+  </div>
+  <div class="row"><button data-close>بستن</button></div>
+</dialog>
+
+<script>
+const $=s=>document.querySelector(s), out=$('#out');
+const HINT={hz:'متن به لهجه هزارگی افغانستان است. گپ‌ها به شکل محاوره‌ای نوشته شود.',kb:'متن به لهجه کابلی است. گپ‌ها به شکل محاوره‌ای نوشته شود.',fa:'متن به زبان فارسی است.'};
+const say=t=>$('#status').textContent=t;
+const store={get:k=>{try{return localStorage.getItem(k)||''}catch(e){return ''}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}}};
+const langInfo=()=>{const [l,d]=$('#dialect').value.split('|');return{lang:l,hint:HINT[d||'fa']}};
+const append=t=>{out.value+=(out.value&&!out.value.endsWith('\n')?'\n':'')+t;out.scrollTop=out.scrollHeight};
+
+/* ---------- live recognition ---------- */
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+let rec=null,active=false,base='',lang='';
+function startLive(){
+  if(!SR){say('مرورگر شما تشخیص زنده را پشتیبانی نمی‌کند. از Chrome استفاده کنید.');return}
+  if(!window.isSecureContext){say('تشخیص زنده فقط روی آدرس https کار می‌کند.');return}
+  lang=langInfo().lang;active=true;base=out.value?out.value.replace(/\n?$/,'\n'):'';
+  $('#live').classList.add('on');run();
+}
+function run(){
+  rec=new SR();rec.lang=lang;rec.continuous=true;rec.interimResults=true;
+  rec.onstart=()=>say('در حال گوش دادن...');
+  rec.onresult=e=>{
+    let fin='',tmp='';
+    for(let i=e.resultIndex;i<e.results.length;i++){
+      const r=e.results[i];(r.isFinal?fin+=r[0].transcript+'\n':tmp+=r[0].transcript);
+    }
+    base+=fin;out.value=base+tmp;out.scrollTop=out.scrollHeight;
+  };
+  rec.onerror=e=>{
+    if(e.error==='language-not-supported'&&lang!=='fa-IR'){lang='fa-IR';say('این لهجه پشتیبانی نشد؛ فارسی ایران استفاده می‌شود.');return}
+    if(e.error==='not-allowed'||e.error==='service-not-allowed'){active=false;say('اجازه‌ی میکروفون داده نشده است. در تنظیمات مرورگر فعالش کنید.')}
+  };
+  rec.onend=()=>{if(active){try{run()}catch(e){}}else{$('#live').classList.remove('on')}};
+  try{rec.start()}catch(e){}
+}
+function stopLive(){active=false;if(rec){try{rec.stop()}catch(e){}}$('#live').classList.remove('on');say('متوقف شد')}
+$('#live').onclick=startLive;$('#stop').onclick=stopLive;
+
+/* ---------- file transcription (Whisper) ---------- */
+$('#file').onclick=()=>{ if(!store.get('k')){say('اول کلید API را وارد کنید.');$('#dkey').showModal();return} $('#picker').click() };
+$('#picker').onchange=async e=>{
+  const f=e.target.files[0];e.target.value='';if(!f)return;
+  if(f.size>25*1024*1024){say('فایل بزرگ‌تر از ۲۵ مگابایت است.');return}
+  say('در حال تبدیل... لطفاً صبر کنید');
+  const fd=new FormData();fd.append('file',f);const key=store.get('k'),groq=key.startsWith('gsk_');fd.append('model',groq?'whisper-large-v3':'whisper-1');fd.append('language','fa');
+  fd.append('response_format','verbose_json');fd.append('temperature','0');fd.append('prompt',langInfo().hint);
+  try{
+    const r=await fetch(groq?'https://api.groq.com/openai/v1/audio/transcriptions':'https://api.openai.com/v1/audio/transcriptions',{method:'POST',headers:{Authorization:'Bearer '+key},body:fd});
+    if(!r.ok)throw new Error((await r.text()).slice(0,120));
+    const j=await r.json();
+    const lines=(j.segments||[]).map(s=>(s.no_speech_prob>0.6)?'[موسیقی یا بدون گفتار]':s.text.trim());
+    append(lines.length?lines.join('\n'):(j.text||''));say('تمام شد ✓');
+  }catch(err){say('خطا: '+String(err.message||err).slice(0,100))}
+};
+
+/* ---------- key dialog ---------- */
+$('#key').onclick=()=>{$('#keyin').value=store.get('k');$('#dkey').showModal()};
+$('#keysave').onclick=()=>{store.set('k',$('#keyin').value.trim());$('#dkey').close();say('کلید ذخیره شد')};
+document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>b.closest('dialog').close());
+$('#clear').onclick=()=>{out.value='';say('')};
+
+/* ---------- export ---------- */
+const stamp=()=>{const d=new Date(),p=n=>String(n).padStart(2,'0');return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'_'+p(d.getHours())+p(d.getMinutes())};
+const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+function download(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1500)}
+function toPNG(text){
+  const W=1080,pad=40,fs=34,lh=60,font=fs+'px "Noto Naskh Arabic",Tahoma,sans-serif';
+  const c=document.createElement('canvas'),x=c.getContext('2d');x.font=font;x.direction='rtl';
+  const lines=[];
+  text.split('\n').forEach(p=>{let cur='';p.split(' ').forEach(w=>{const t=cur?cur+' '+w:w;if(x.measureText(t).width>W-2*pad&&cur){lines.push(cur);cur=w}else cur=t});lines.push(cur)});
+  c.width=W;c.height=Math.max(200,lines.length*lh+2*pad);
+  x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.fillStyle='#000';x.font=font;x.direction='rtl';x.textAlign='right';x.textBaseline='top';
+  lines.forEach((l,i)=>x.fillText(l,W-pad,pad+i*lh));
+  return new Promise(r=>c.toBlob(r,'image/png'));
+}
+document.querySelectorAll('[data-fmt]').forEach(b=>b.onclick=async()=>{
+  const text=out.value;if(!text.trim()){say('متنی برای ذخیره نیست');$('#dsave').close();return}
+  const fmt=b.dataset.fmt,n='stt_'+stamp();
+  if(fmt==='txt')download(new Blob(['\ufeff'+text],{type:'text/plain;charset=utf-8'}),n+'.txt');
+  else if(fmt==='doc'){
+    const html='<html dir="rtl"><head><meta charset="utf-8"></head><body dir="rtl">'+text.split('\n').map(l=>'<p dir="rtl" style="text-align:right">'+esc(l)+'</p>').join('')+'</body></html>';
+    download(new Blob(['\ufeff'+html],{type:'application/msword'}),n+'.doc');
+  }else if(fmt==='png')download(await toPNG(text),n+'.png');
+  else{
+    const w=window.open('','_blank');
+    if(!w){say('پنجره بسته شد. اجازه‌ی باز شدن پنجره را بدهید.');return}
+    w.document.write('<html dir="rtl"><head><meta charset="utf-8"><title>'+n+'</title><style>body{font-family:Tahoma,sans-serif;font-size:16pt;line-height:2;white-space:pre-wrap;padding:20px}</style></head><body>'+esc(text)+'</body></html>');
+    w.document.close();w.focus();setTimeout(()=>w.print(),400);say('در پنجره‌ی چاپ، «Save as PDF» را انتخاب کنید.');
+  }
+  $('#dsave').close();
+});
+$('#save').onclick=()=>$('#dsave').showModal();
+</script>
+</body>
+</html>
